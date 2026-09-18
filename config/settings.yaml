@@ -1,0 +1,76 @@
+# ==============================================================================
+# Intelligent Surveillance System (ISS) Configuration
+# Optimized for Apple Silicon macOS (MacBook Air)
+# ==============================================================================
+
+# Video Stream Settings
+stream:
+  source: 0                 # 0 for built-in FaceTime HD camera, or RTSP URL
+  width: 1280
+  height: 720
+  fps: 30
+  buffer_seconds: 5         # Rolling pre-event history buffer in seconds
+
+# Thermal Guard & Motion Gating (Reduces continuous compute on fanless Mac)
+motion:
+  enabled: true
+  min_motion_area: 1200     # Minimum pixel area to trigger neural inference
+  history: 500              # MOG2 history frames
+  var_threshold: 25         # MOG2 variance threshold
+
+# Deep Learning Inference (CoreML on Apple Neural Engine / Metal MPS)
+detector:
+  model_type: "yolo"        # "yolo" or "mock" (for headless testing)
+  model_path: "yolo11n.pt"  # CoreML (.mlpackage) or PyTorch (.pt)
+  confidence_threshold: 0.45
+  target_classes:
+    - 0   # Person
+    - 1   # Bicycle
+    - 2   # Car
+    - 3   # Motorcycle
+    - 5   # Bus
+    - 7   # Truck
+    - 24  # Backpack
+    - 26  # Handbag
+    - 28  # Suitcase
+
+# Multi-Object Tracker
+tracker:
+  max_disappeared: 30       # Max frames an object can be lost before removing track
+  min_iou: 0.3              # Minimum IoU matching threshold
+
+# Spatial Analytics Rules
+analytics:
+  tripwire:
+    enabled: true
+    line_start: [100, 360]
+    line_end: [1180, 360]
+    direction: "both"
+
+  intrusion:
+    enabled: true
+    polygon:
+      - [700, 150]
+      - [1150, 150]
+      - [1150, 600]
+      - [700, 600]
+
+  loitering:
+    enabled: true
+    max_dwell_seconds: 8.0
+    radius_pixels: 60.0
+
+# Alert & Notification Dispatcher
+alerts:
+  macos_banner: true
+  macos_sound: "Hero"
+  telegram:
+    enabled: false
+    bot_token: ""
+    chat_id: ""
+
+# Video Recording & Archival
+recording:
+  output_dir: "recordings"
+  post_event_seconds: 8
+  codec: "avc1"
