@@ -23,16 +23,32 @@ detector:
   model_type: "yolo"        # "yolo" or "mock" (for headless testing)
   model_path: "yolo11n.pt"  # CoreML (.mlpackage) or PyTorch (.pt)
   confidence_threshold: 0.45
+  idle_scan_seconds: 1.0     # Also scan this often when the scene is still
+  min_detection_area: 1500   # Minimum pixel area per detection (filters noise)
+  min_person_size: 40        # Min bbox width/height for person class (filters hand false-positives)
+  min_person_area: 2000      # Min pixel area for person class detections
   target_classes:
-    - 0   # Person
-    - 1   # Bicycle
-    - 2   # Car
-    - 3   # Motorcycle
-    - 5   # Bus
-    - 7   # Truck
-    - 24  # Backpack
-    - 26  # Handbag
-    - 28  # Suitcase
+    - 0    # Person
+    - 1    # Bicycle
+    - 2    # Car
+    - 3    # Motorcycle
+    - 5    # Bus
+    - 7    # Truck
+    - 24   # Backpack
+    - 26   # Handbag
+    - 28   # Suitcase
+    - 44   # Knife (THREAT)
+    - 56   # Chair
+    - 57   # Couch
+    - 59   # Bed
+    - 60   # Dining table
+    - 63   # Laptop (TECH_ASSET)
+    - 64   # Mouse (TECH_ASSET)
+    - 66   # Keyboard (TECH_ASSET)
+    - 67   # Cell phone (TECH_ASSET)
+    - 73   # Book
+    - 76   # Scissors (THREAT)
+    - 77   # Teddy bear
 
 # Multi-Object Tracker
 tracker:
@@ -66,11 +82,20 @@ alerts:
   macos_sound: "Hero"
   telegram:
     enabled: false
-    bot_token: ""
-    chat_id: ""
+    token_env: "ISS_TELEGRAM_BOT_TOKEN"
+    chat_id_env: "ISS_TELEGRAM_CHAT_ID"
 
 # Video Recording & Archival
 recording:
+  enabled: true
   output_dir: "recordings"
   post_event_seconds: 8
-  codec: "avc1"
+  codec: "mp4v"
+  max_pending_incidents: 1  # One active/coalesced incident at a time
+  max_age_days: 14
+  max_total_mb: 2048
+
+# Local browser dashboard (open http://localhost:8080 while the pipeline runs)
+web_ui:
+  enabled: true
+  port: 8080

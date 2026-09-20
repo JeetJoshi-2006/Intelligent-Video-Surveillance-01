@@ -4,7 +4,7 @@ import time
 import cv2
 import numpy as np
 
-from core.config_loader import load_config
+from core.config_loader import ConfigError, load_config, resolve_telegram_credentials
 from core.stream_manager import StreamManager
 from core.motion_gater import MotionGater
 from core.detector import EdgeDetector
@@ -12,6 +12,7 @@ from core.tracker import MultiObjectTracker
 from core.analytics import AnalyticsEngine
 from alerts.dispatcher import AlertDispatcher
 from alerts.recorder import EventRecorder
+from core.web_stream import start_web_server, update_dashboard, update_web_frame
 
 def draw_hud(frame, tracklets, events, has_motion, fps, config):
     """Renders visual heads-up display (HUD), zones, and tracking trails on frame."""
@@ -82,7 +83,11 @@ def draw_hud(frame, tracklets, events, has_motion, fps, config):
 
 def run_pipeline():
     config_path = os.path.join(os.path.dirname(__file__), "config/settings.yaml")
-    config = load_config(config_path)
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        print(f"[CONFIG ERROR] {exc}")
+        sys.exit(2)
 
     stream_cfg = config.get("stream", {})
     source = stream_cfg.get("source", 0)
@@ -92,7 +97,7 @@ def run_pipeline():
     print(f"  Source: {source} | Buffer: {stream_cfg.get('buffer_seconds')}s")
     print("=" * 70)
 
-    # Initialize Modules
+    # Initialize lightweight modules (no heavy I/O or model loading)
     stream_mgr = StreamManager(
         source=source,
         width=stream_cfg.get("width", 1280),
@@ -108,13 +113,6 @@ def run_pipeline():
         var_threshold=motion_cfg.get("var_threshold", 25)
     )
 
-    det_cfg = config.get("detector", {})
-    detector = EdgeDetector(
-        model_path=det_cfg.get("model_path", "yolo11n.pt"),
-        conf_threshold=det_cfg.get("confidence_threshold", 0.45),
-        target_classes=det_cfg.get("target_classes")
-    )
-
     trk_cfg = config.get("tracker", {})
     tracker = MultiObjectTracker(
         max_disappeared=trk_cfg.get("max_disappeared", 30),
@@ -124,33 +122,89 @@ def run_pipeline():
     analytics = AnalyticsEngine(config=config.get("analytics", {}))
 
     alert_cfg = config.get("alerts", {})
+    try:
+        telegram_token, telegram_chat_id = resolve_telegram_credentials(alert_cfg)
+    except ConfigError as exc:
+        print(f"[CONFIG ERROR] {exc}")
+        sys.exit(2)
     dispatcher = AlertDispatcher(
         macos_banner=alert_cfg.get("macos_banner", True),
         sound_name=alert_cfg.get("macos_sound", "Hero"),
-        telegram_token=alert_cfg.get("telegram", {}).get("bot_token"),
-        telegram_chat_id=alert_cfg.get("telegram", {}).get("chat_id")
+        telegram_token=telegram_token,
+        telegram_chat_id=telegram_chat_id
     )
 
     rec_cfg = config.get("recording", {})
     recorder = EventRecorder(
-        output_dir=rec_cfg.get("output_dir", "recordings"),
-        post_event_seconds=rec_cfg.get("post_event_seconds", 8),
-        fps=stream_cfg.get("fps", 30)
+        output_dir=rec_cfg["output_dir"], post_event_seconds=rec_cfg["post_event_seconds"],
+        fps=stream_cfg["fps"], codec=rec_cfg["codec"],
+        max_pending_incidents=rec_cfg["max_pending_incidents"],
+        max_age_days=rec_cfg["max_age_days"], max_total_mb=rec_cfg["max_total_mb"],
     )
 
-    # Start stream capture thread
+    # Build static metadata for the dashboard
+    camera_info = {
+        "source": str(source),
+        "width": stream_cfg.get("width", 1280),
+        "height": stream_cfg.get("height", 720),
+        "fps": stream_cfg.get("fps", 30),
+    }
+    zones_init = {
+        "tripwire": {"enabled": analytics.tripwire_cfg.get("enabled", False), "triggered": False},
+        "intrusion": {"enabled": analytics.intrusion_cfg.get("enabled", False), "triggered": False},
+        "loitering": {"enabled": analytics.loitering_cfg.get("enabled", False), "triggered": False},
+    }
+
+    # Start web dashboard FIRST so it is available during heavy initialization
+    web_server = None
+    web_cfg = config["web_ui"]
+    if web_cfg["enabled"]:
+        try:
+            web_server = start_web_server(web_cfg["port"])
+            update_dashboard("Starting", False, 0.0, [], [],
+                             camera_info=camera_info,
+                             stream_health={"frame_loss": 0, "dropped_frames": 0, "last_frame_ts": 0.0},
+                             zones=zones_init,
+                             detection_stats={"total_detections": 0, "total_alerts": 0},
+                             recording={"active": False, "pending": 0})
+        except OSError as exc:
+            print(f"[WebUI] Disabled: could not start dashboard on port {web_cfg['port']}: {exc}")
+
+    # Load detector (heavy — YOLO model loading can take 10-15s on first run)
+    print("[INIT] Loading YOLO model...")
+    det_cfg = config.get("detector", {})
+    detector = EdgeDetector(
+        model_path=det_cfg.get("model_path", "yolo11n.pt"),
+        conf_threshold=det_cfg.get("confidence_threshold", 0.45),
+        target_classes=det_cfg.get("target_classes"),
+        mode="mock" if det_cfg.get("model_type") == "mock" else "auto",
+        min_detection_area=det_cfg.get("min_detection_area", 1500),
+        min_person_size=det_cfg.get("min_person_size", 40),
+        min_person_area=det_cfg.get("min_person_area", 2000),
+    )
+    idle_scan_seconds = float(det_cfg["idle_scan_seconds"])
+
+    # Start stream capture thread (can be slow on macOS camera init)
+    print("[INIT] Opening camera stream...")
     try:
         stream_mgr.start()
     except Exception as e:
         print(f"[ERROR] Failed to start video capture: {e}")
         print("Tip: Check camera permissions in System Settings > Privacy & Security > Camera")
+        if web_server:
+            web_server.shutdown()
+            web_server.server_close()
         sys.exit(1)
 
     print("[SYSTEM READY] Press 'q' in the video window or Ctrl+C in terminal to exit.")
 
     fps_history = []
     last_loop_time = time.time()
+    last_inference_time = 0.0
     active_events = []
+    tracklets = []
+    total_detections = 0
+    total_alerts = 0
 
     try:
         while True:
@@ -160,15 +214,19 @@ def run_pipeline():
                 continue
 
             # 1. Motion Gating Stage
-            has_motion, fg_mask, motion_boxes = motion_gater.evaluate(frame)
+            if motion_cfg["enabled"]:
+                has_motion, fg_mask, motion_boxes = motion_gater.evaluate(frame)
+            else:
+                has_motion, fg_mask, motion_boxes = True, None, []
 
             # 2. Neural Detection (Triggered on motion or periodically)
-            detections = []
-            if has_motion:
+            should_infer = has_motion or (time.time() - last_inference_time >= idle_scan_seconds)
+            if should_infer:
                 detections = detector.detect(frame)
-
-            # 3. Multi-Object Tracking
-            tracklets = tracker.update(detections)
+                total_detections += len(detections)
+                last_inference_time = time.time()
+                # Do not age tracks when inference is intentionally skipped.
+                tracklets = tracker.update(detections)
 
             # 4. Spatial Analytics Evaluation
             events = analytics.evaluate_tracklets(tracklets)
@@ -179,10 +237,11 @@ def run_pipeline():
                 
                 for ev in events:
                     # Dispatch notifications
+                    total_alerts += 1
                     dispatcher.dispatch(ev, snapshot_frame=frame)
-                    # Trigger incident video recording
-                    pre_buffer = stream_mgr.get_pre_event_clip()
-                    recorder.record_incident(ev["rule"], pre_buffer, stream_mgr)
+                    if rec_cfg["enabled"]:
+                        pre_buffer = stream_mgr.get_pre_event_clip()
+                        recorder.record_incident(ev["rule"], pre_buffer, stream_mgr)
 
             # Compute actual FPS
             now = time.time()
@@ -196,6 +255,34 @@ def run_pipeline():
 
             # 5. Render HUD Display
             annotated_frame = draw_hud(frame, tracklets, active_events, has_motion, avg_fps, config)
+            update_web_frame(annotated_frame)
+
+            # Publish enhanced state to web dashboard
+            zones = {
+                "tripwire": {"enabled": analytics.tripwire_cfg.get("enabled", False),
+                             "triggered": any(e["rule"] == "VIRTUAL_TRIPWIRE" for e in active_events)},
+                "intrusion": {"enabled": analytics.intrusion_cfg.get("enabled", False),
+                              "triggered": any(e["rule"] == "PERIMETER_INTRUSION" for e in active_events)},
+                "loitering": {"enabled": analytics.loitering_cfg.get("enabled", False),
+                              "triggered": any(e["rule"] == "LOITERING_DETECTED" for e in active_events)},
+            }
+            stream_health = {
+                "frame_loss": stream_mgr.dropped_frames,
+                "dropped_frames": stream_mgr.dropped_frames,
+                "last_frame_ts": stream_mgr.latest_timestamp,
+            }
+            recording_status = {
+                "active": recorder._active > 0,
+                "pending": recorder._active,
+            }
+            detection_stats = {
+                "total_detections": total_detections,
+                "total_alerts": total_alerts,
+            }
+            update_dashboard("Active", has_motion, avg_fps, tracklets, events,
+                             camera_info=camera_info, stream_health=stream_health,
+                             zones=zones, detection_stats=detection_stats,
+                             recording=recording_status)
 
             # Display window (if GUI environment available)
             cv2.imshow("Intelligent Surveillance System (Edge AI)", annotated_frame)
@@ -206,6 +293,9 @@ def run_pipeline():
         print("\n[SYSTEM] Stopping pipeline...")
     finally:
         stream_mgr.stop()
+        if web_server:
+            web_server.shutdown()
+            web_server.server_close()
         cv2.destroyAllWindows()
         print("[SYSTEM] Clean shutdown complete.")
 

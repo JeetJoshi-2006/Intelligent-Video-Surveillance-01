@@ -1,0 +1,7 @@
+numpy>=1.26,<3
+opencv-python>=4.10,<5
+PyYAML>=6,<7
+requests>=2.31,<3
+torch>=2.5,<3
+torchvision>=0.20,<1
+ultralytics>=8.3,<9

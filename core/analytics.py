@@ -10,6 +10,11 @@ def segments_intersect(A, B, C, D):
     """Determines whether line segment AB intersects line segment CD."""
     return (ccw(A, C, D) != ccw(B, C, D)) and (ccw(A, B, C) != ccw(A, B, D))
 
+def line_side(line_start, line_end, point):
+    """Signed side of a directed line; positive is its forward/left side."""
+    return ((line_end[0] - line_start[0]) * (point[1] - line_start[1])
+            - (line_end[1] - line_start[1]) * (point[0] - line_start[0]))
+
 def point_in_polygon(point, polygon):
     """
     Ray-casting algorithm to determine if a 2D point (x, y) lies inside an arbitrary polygon.
@@ -79,7 +84,16 @@ class AnalyticsEngine:
                 l_start = tuple(self.tripwire_cfg.get("line_start", [100, 360]))
                 l_end = tuple(self.tripwire_cfg.get("line_end", [1180, 360]))
                 
-                if curr_pos != prev_pos and segments_intersect(l_start, l_end, prev_pos, curr_pos):
+                direction = self.tripwire_cfg.get("direction", "both")
+                prev_side = line_side(l_start, l_end, prev_pos)
+                curr_side = line_side(l_start, l_end, curr_pos)
+                crossed = curr_pos != prev_pos and segments_intersect(l_start, l_end, prev_pos, curr_pos)
+                direction_matches = (
+                    direction == "both"
+                    or (direction == "forward" and prev_side < 0 <= curr_side)
+                    or (direction == "reverse" and prev_side > 0 >= curr_side)
+                )
+                if crossed and direction_matches:
                     alert_key = f"tripwire_{t_id}"
                     if self._can_fire(alert_key):
                         events.append({

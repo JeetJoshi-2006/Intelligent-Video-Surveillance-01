@@ -18,14 +18,16 @@ fi
 echo "[SETUP] Activating virtual environment..."
 source venv/bin/activate
 
-# Install required packages
-echo "[SETUP] Checking and installing dependencies..."
-pip install --upgrade pip
-pip install numpy opencv-python pyyaml requests
-pip install torch torchvision ultralytics
+# Install pinned dependency ranges only when imports are unavailable.
+if ! python3 -c "import cv2, torch, ultralytics, yaml, requests" 2>/dev/null; then
+    echo "[SETUP] Installing dependencies..."
+    pip install -r requirements.txt
+fi
 
-echo "[SYSTEM] Running unit verification tests..."
-python3 tests/test_pipeline.py
+if [ "${ISS_SKIP_TESTS:-0}" != "1" ]; then
+    echo "[SYSTEM] Running unit verification tests..."
+    python3 -m unittest discover -s tests -v
+fi
 
 echo "[SYSTEM] Launching Surveillance Pipeline..."
 python3 main.py
