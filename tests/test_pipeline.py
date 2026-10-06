@@ -136,7 +136,8 @@ class TestSurveillancePipeline(unittest.TestCase):
         self.assertIn(63, COCO_SURVEILLANCE_LABELS)
         self.assertEqual(COCO_SURVEILLANCE_LABELS[63], "laptop")
         self.assertEqual(COCO_SURVEILLANCE_LABELS[67], "cell phone")
-        self.assertIn(44, COCO_SURVEILLANCE_LABELS)
+        self.assertIn(43, COCO_SURVEILLANCE_LABELS)
+        self.assertEqual(COCO_SURVEILLANCE_LABELS[43], "knife")
         print("✓ Detector extended class labels passed.")
 
     def test_motion_gater_and_stream(self):

@@ -21,12 +21,25 @@ motion:
 # Deep Learning Inference (CoreML on Apple Neural Engine / Metal MPS)
 detector:
   model_type: "yolo"        # "yolo" or "mock" (for headless testing)
-  model_path: "yolo11n.pt"  # CoreML (.mlpackage) or PyTorch (.pt)
-  confidence_threshold: 0.45
+  model_preset: "medium"    # "nano", "small", "medium", "large"
+  model_path: "yolo11m.pt"  # CoreML (.mlpackage) or PyTorch (.pt)
+  confidence_threshold: 0.50 # Global fallback threshold
+  class_confidences:        # Fine-grained class sensitivity (higher recall for threats/assets)
+    0:  0.55   # Person (raised from 0.42 to eliminate chair/clothes false positives)
+    43: 0.22   # Knife (COCO class 43, high-sensitivity threat threshold)
+    76: 0.25   # Scissors (high sensitivity threat)
+    67: 0.38   # Cell phone (tech asset)
+    63: 0.40   # Laptop (tech asset)
+    65: 0.38   # Remote control (tech asset)
+    24: 0.42   # Backpack
+    26: 0.42   # Handbag
+    28: 0.42   # Suitcase
   idle_scan_seconds: 1.0     # Also scan this often when the scene is still
+  async_inference: true      # Decouples camera stream (30 FPS) from model inference
+  inference_size: 640        # Model input dimension (640 standard, 800 for enhanced small-object/knife detection)
   min_detection_area: 1500   # Minimum pixel area per detection (filters noise)
-  min_person_size: 40        # Min bbox width/height for person class (filters hand false-positives)
-  min_person_area: 2000      # Min pixel area for person class detections
+  min_person_size: 50        # Min bbox width/height for person class (filters hand false-positives)
+  min_person_area: 3500      # Min pixel area for person class detections (filters small artifacts)
   target_classes:
     - 0    # Person
     - 1    # Bicycle
@@ -37,7 +50,7 @@ detector:
     - 24   # Backpack
     - 26   # Handbag
     - 28   # Suitcase
-    - 44   # Knife (THREAT)
+    - 43   # Knife (THREAT - COCO class 43)
     - 56   # Chair
     - 57   # Couch
     - 59   # Bed
@@ -49,6 +62,7 @@ detector:
     - 73   # Book
     - 76   # Scissors (THREAT)
     - 77   # Teddy bear
+    - 65   # Remote control (TECH_ASSET)
 
 # Multi-Object Tracker
 tracker:

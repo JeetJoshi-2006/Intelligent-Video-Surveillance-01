@@ -15,6 +15,7 @@ SURVEILLANCE_CATEGORIES = {
     "keyboard": {"category": "TECH_ASSET", "color": (200, 200, 0), "priority": 4},
     "mouse": {"category": "TECH_ASSET", "color": (200, 200, 0), "priority": 4},
     "tv": {"category": "TECH_ASSET", "color": (200, 200, 0), "priority": 4},
+    "remote": {"category": "TECH_ASSET", "color": (220, 220, 0), "priority": 4},
 
     # 4. Baggage & Left Luggage -> YELLOW / ORANGE
     "backpack": {"category": "BAGGAGE", "color": (0, 215, 255), "priority": 3},
@@ -33,6 +34,10 @@ SURVEILLANCE_CATEGORIES = {
     "dog": {"category": "ANIMAL", "color": (160, 160, 160), "priority": 5},
     "cat": {"category": "ANIMAL", "color": (160, 160, 160), "priority": 5},
     "bird": {"category": "ANIMAL", "color": (140, 140, 140), "priority": 5},
+
+     "remote": {"category": "TECH_ASSET", "color": (200, 200, 0), "priority": 4},
+    "laptop": {"category": "TECH_ASSET", "color": (255, 255, 0), "priority": 3},
+    "cell phone": {"category": "TECH_ASSET", "color": (255, 255, 0), "priority": 3},
 }
 
 def get_class_metadata(label):

@@ -22,10 +22,14 @@ DEFAULT_CONFIG = {
     },
     "detector": {
         "model_type": "yolo",
-        "model_path": "yolo11n.pt",
+        "model_preset": "medium",
+        "model_path": "yolo11m.pt",
         "confidence_threshold": 0.45,
+        "class_confidences": {},
         "target_classes": [0, 1, 2, 3, 5, 7, 24, 26, 28],
         "idle_scan_seconds": 1.0,
+        "async_inference": True,
+        "inference_size": 640,
         "min_detection_area": 1500,
         "min_person_size": 40,
         "min_person_area": 2000,
@@ -80,7 +84,9 @@ def _merge(defaults, supplied):
     for key, value in supplied.items():
         if key not in result:
             raise ConfigError(f"Unknown configuration key: {key}")
-        if isinstance(value, dict) and isinstance(result[key], dict):
+        if key == "class_confidences":
+            result[key] = value
+        elif isinstance(value, dict) and isinstance(result[key], dict):
             result[key] = _merge(result[key], value)
         else:
             result[key] = value
@@ -108,8 +114,25 @@ def validate_config(config):
     _require(isinstance(detector["min_detection_area"], (int, float)) and detector["min_detection_area"] >= 0, "detector.min_detection_area must be non-negative")
     _require(isinstance(detector["min_person_size"], (int, float)) and detector["min_person_size"] >= 0, "detector.min_person_size must be non-negative")
     _require(isinstance(detector["min_person_area"], (int, float)) and detector["min_person_area"] >= 0, "detector.min_person_area must be non-negative")
+    if "class_confidences" in detector and detector["class_confidences"] is not None:
+        _require(isinstance(detector["class_confidences"], dict), "detector.class_confidences must be a dictionary")
+        for cls_k, conf_v in detector["class_confidences"].items():
+            _require(isinstance(cls_k, int) and cls_k >= 0, f"class_confidences key {cls_k} must be non-negative int")
+            _require(0 < float(conf_v) <= 1, f"class_confidences value for {cls_k} must be between 0 and 1")
+    if "async_inference" in detector:
+        _require(isinstance(detector["async_inference"], bool), "detector.async_inference must be boolean")
+    if "inference_size" in detector:
+        _require(isinstance(detector["inference_size"], int) and detector["inference_size"] > 0, "detector.inference_size must be positive integer")
     if detector["model_type"] == "yolo":
-        _require(Path(detector["model_path"]).is_file(), f"YOLO model not found: {detector['model_path']}")
+        model_p = Path(detector["model_path"])
+        if not (model_p.is_file() or model_p.is_dir()):
+            # Check relative to project root
+            project_root = Path(__file__).resolve().parent.parent
+            candidate = project_root / detector["model_path"]
+            if candidate.is_file() or candidate.is_dir():
+                detector["model_path"] = str(candidate)
+                model_p = candidate
+        _require(model_p.is_file() or model_p.is_dir(), f"YOLO model not found: {detector['model_path']}")
 
     tracker = config["tracker"]
     _require(isinstance(tracker["max_disappeared"], int) and tracker["max_disappeared"] >= 0, "tracker.max_disappeared must be a non-negative integer")

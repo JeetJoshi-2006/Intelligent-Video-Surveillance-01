@@ -15,19 +15,19 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 
-echo "[SETUP] Activating virtual environment..."
-source venv/bin/activate
+# Use venv Python directly (source activate doesn't work in non-interactive shells)
+VENV_PYTHON="venv/bin/python"
 
 # Install pinned dependency ranges only when imports are unavailable.
-if ! python3 -c "import cv2, torch, ultralytics, yaml, requests" 2>/dev/null; then
+if ! $VENV_PYTHON -c "import cv2, torch, ultralytics, yaml, requests" 2>/dev/null; then
     echo "[SETUP] Installing dependencies..."
-    pip install -r requirements.txt
+    venv/bin/pip install -r requirements.txt
 fi
 
-if [ "${ISS_SKIP_TESTS:-0}" != "1" ]; then
+if [ "$1" == "--test" ] || [ "${ISS_RUN_TESTS:-0}" == "1" ]; then
     echo "[SYSTEM] Running unit verification tests..."
-    python3 -m unittest discover -s tests -v
+    OPENCV_AVFOUNDATION_SKIP_AUTH=1 $VENV_PYTHON -m unittest discover -s tests -v
 fi
 
 echo "[SYSTEM] Launching Surveillance Pipeline..."
-python3 main.py
+$VENV_PYTHON main.py

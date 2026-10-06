@@ -14,7 +14,7 @@ from alerts.dispatcher import AlertDispatcher
 from alerts.recorder import EventRecorder
 from core.web_stream import start_web_server, update_dashboard, update_web_frame
 
-def draw_hud(frame, tracklets, events, has_motion, fps, config):
+def draw_hud(frame, tracklets, events, has_motion, fps, config, model_info=None):
     """Renders visual heads-up display (HUD), zones, and tracking trails on frame."""
     h, w = frame.shape[:2]
     overlay = frame.copy()
@@ -65,11 +65,16 @@ def draw_hud(frame, tracklets, events, has_motion, fps, config):
     status_text = "STATUS: ACTIVE INFERENCE" if has_motion else "STATUS: STANDBY (THERMAL GUARD)"
     status_color = (0, 255, 0) if has_motion else (200, 200, 200)
     
-    cv2.rectangle(frame, (10, 10), (450, 65), (20, 20, 20), -1)
+    hud_h = 82 if model_info else 65
+    cv2.rectangle(frame, (10, 10), (510, hud_h), (20, 20, 20), -1)
     cv2.putText(frame, f"FPS: {fps:.1f} | Objects: {len(tracklets)}", (20, 32),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(frame, status_text, (20, 55),
+    cv2.putText(frame, status_text, (20, 53),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1, cv2.LINE_AA)
+    if model_info:
+        info_str = f"{model_info.get('name', 'YOLO')} | {model_info.get('backend', '')} | {model_info.get('latency', 0.0):.1f}ms"
+        cv2.putText(frame, info_str, (20, 73),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 255), 1, cv2.LINE_AA)
 
     # 5. Alert Banner Overlay
     if events:
@@ -174,15 +179,54 @@ def run_pipeline():
     print("[INIT] Loading YOLO model...")
     det_cfg = config.get("detector", {})
     detector = EdgeDetector(
-        model_path=det_cfg.get("model_path", "yolo11n.pt"),
+        model_path=det_cfg.get("model_path", "yolo11m.pt"),
         conf_threshold=det_cfg.get("confidence_threshold", 0.45),
+        class_confidences=det_cfg.get("class_confidences", {}),
         target_classes=det_cfg.get("target_classes"),
         mode="mock" if det_cfg.get("model_type") == "mock" else "auto",
         min_detection_area=det_cfg.get("min_detection_area", 1500),
         min_person_size=det_cfg.get("min_person_size", 40),
         min_person_area=det_cfg.get("min_person_area", 2000),
+        inference_size=det_cfg.get("inference_size", 640),
     )
     idle_scan_seconds = float(det_cfg["idle_scan_seconds"])
+
+    # Setup asynchronous inference worker if enabled
+    async_enabled = det_cfg.get("async_inference", False) and detector.mode != "mock"
+    infer_thread = None
+    worker_stop = None
+    infer_queue = None
+    results_queue = None
+    if async_enabled:
+        import threading
+        from queue import Queue
+        infer_queue = Queue(maxsize=1)
+        results_queue = Queue(maxsize=1)
+        worker_stop = threading.Event()
+
+        def _infer_worker():
+            while not worker_stop.is_set():
+                try:
+                    f = infer_queue.get(timeout=0.05)
+                except Exception:
+                    continue
+                dets = detector.detect(f)
+                try:
+                    results_queue.put_nowait(dets)
+                except Exception:
+                    try:
+                        results_queue.get_nowait()
+                    except Exception:
+                        pass
+                    try:
+                        results_queue.put_nowait(dets)
+                    except Exception:
+                        pass
+                infer_queue.task_done()
+
+        infer_thread = threading.Thread(target=_infer_worker, daemon=True)
+        infer_thread.start()
+        print("[INIT] Asynchronous inference worker running (30 FPS decoupled pipeline)")
 
     # Start stream capture thread (can be slow on macOS camera init)
     print("[INIT] Opening camera stream...")
@@ -191,6 +235,8 @@ def run_pipeline():
     except Exception as e:
         print(f"[ERROR] Failed to start video capture: {e}")
         print("Tip: Check camera permissions in System Settings > Privacy & Security > Camera")
+        if async_enabled and worker_stop is not None:
+            worker_stop.set()
         if web_server:
             web_server.shutdown()
             web_server.server_close()
@@ -219,14 +265,37 @@ def run_pipeline():
             else:
                 has_motion, fg_mask, motion_boxes = True, None, []
 
-            # 2. Neural Detection (Triggered on motion or periodically)
-            should_infer = has_motion or (time.time() - last_inference_time >= idle_scan_seconds)
-            if should_infer:
-                detections = detector.detect(frame)
-                total_detections += len(detections)
-                last_inference_time = time.time()
-                # Do not age tracks when inference is intentionally skipped.
-                tracklets = tracker.update(detections)
+            # 2. Neural Detection & Tracking
+            if async_enabled:
+                should_infer = has_motion or (time.time() - last_inference_time >= idle_scan_seconds)
+                if should_infer and not infer_queue.full():
+                    try:
+                        infer_queue.put_nowait(frame.copy())
+                        last_inference_time = time.time()
+                    except Exception:
+                        pass
+
+                new_dets = None
+                if not results_queue.empty():
+                    try:
+                        new_dets = results_queue.get_nowait()
+                    except Exception:
+                        pass
+
+                if new_dets is not None:
+                    total_detections += len(new_dets)
+                    tracklets = tracker.update(new_dets)
+                else:
+                    tracklets = tracker.predict()
+            else:
+                should_infer = has_motion or (time.time() - last_inference_time >= idle_scan_seconds)
+                if should_infer:
+                    detections = detector.detect(frame)
+                    total_detections += len(detections)
+                    last_inference_time = time.time()
+                    tracklets = tracker.update(detections)
+                else:
+                    tracklets = tracker.predict()
 
             # 4. Spatial Analytics Evaluation
             events = analytics.evaluate_tracklets(tracklets)
@@ -254,7 +323,12 @@ def run_pipeline():
             avg_fps = sum(fps_history) / len(fps_history) if fps_history else 30.0
 
             # 5. Render HUD Display
-            annotated_frame = draw_hud(frame, tracklets, active_events, has_motion, avg_fps, config)
+            model_info = {
+                "name": os.path.basename(detector.model_path),
+                "backend": detector.backend_name,
+                "latency": detector.last_latency_ms
+            }
+            annotated_frame = draw_hud(frame, tracklets, active_events, has_motion, avg_fps, config, model_info=model_info)
             update_web_frame(annotated_frame)
 
             # Publish enhanced state to web dashboard
@@ -292,6 +366,10 @@ def run_pipeline():
     except KeyboardInterrupt:
         print("\n[SYSTEM] Stopping pipeline...")
     finally:
+        if async_enabled and worker_stop is not None:
+            worker_stop.set()
+            if infer_thread is not None:
+                infer_thread.join(timeout=1.0)
         stream_mgr.stop()
         if web_server:
             web_server.shutdown()
